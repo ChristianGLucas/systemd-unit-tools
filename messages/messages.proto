@@ -27,11 +27,17 @@
 //
 // Every node accepts EITHER a raw `text` unit-file string (parsed internally,
 // the common case when calling a node standalone) OR a pre-parsed `unit`
-// UnitFile (the common case when chained after ParseUnitFile in a flow, to
-// avoid re-parsing). `unit` wins when both are non-empty. Parsing/consuming a
-// unit file never touches systemctl, D-Bus, the filesystem, the network, the
-// wall clock, or randomness — the unit file is always exactly the text the
-// caller supplied.
+// UnitFile (avoids re-parsing when a caller — an agent, a script — already
+// holds one from an earlier ParseUnitFile call and wants to run several
+// extraction nodes against it). `unit` wins when both are non-empty.
+// NOTE: as of this version, wiring `unit` straight across a flow.yaml edge
+// adapter is NOT yet supported by the Axiom flow compiler (nested/repeated
+// MESSAGE-kind fields cannot cross a plain edge adapter today) — the `unit`
+// field is a direct-invoke / multi-call convenience, not a proven flow-edge
+// path; pass `text` on each node when composing this package's nodes inside
+// a visual/flow.yaml graph. Parsing/consuming a unit file never touches
+// systemctl, D-Bus, the filesystem, the network, the wall clock, or
+// randomness — the unit file is always exactly the text the caller supplied.
 
 syntax = "proto3";
 

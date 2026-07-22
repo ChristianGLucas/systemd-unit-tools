@@ -34,8 +34,12 @@ UnitFile { sections: [ Section { name, directives: [ Directive { key, value } ] 
 
 Every other node accepts either raw `text` (parsed internally — the common
 case calling a node standalone) or a pre-parsed `unit: UnitFile` from
-`ParseUnitFile` (the common case when composed in a flow, avoiding
-re-parsing).
+`ParseUnitFile`, to avoid re-parsing when a caller (an agent, a script)
+already holds a parsed structure and wants to run several extraction nodes
+against it. Note: as of Axiom's current flow compiler, a nested/repeated
+MESSAGE-kind field (like `unit`) cannot cross a plain `flow.yaml` edge
+adapter yet — pass `text` on each node when composing this package inside a
+visual/flow.yaml graph; the `unit` shortcut is a direct-invoke convenience.
 
 ## What wraps what
 

@@ -1,0 +1,22 @@
+# Axiom flow — composes published nodes into a graph.
+# Reference nodes by package + node name (discover them with: axiom search --json).
+# Positions are coarse grid cells; omit col/row to auto-layout (axiom flow layout).
+#
+# NOTE: a two-node version of this flow (ParseUnitFile -> GetDependencies,
+# wired via `adapter: {unit: unit}`) was authored and checked with
+# `axiom flow preview` first. It failed with "encoding kind KIND_MESSAGE not
+# implemented" — a platform-side limitation on nested MESSAGE-kind fields
+# crossing a plain edge adapter (filed as platform feedback). This flow
+# proves the deployed-node flow-execution path end to end for this package
+# without depending on that currently-unsupported adapter shape.
+name: systemd-smoke
+description: "Parse a unit file — proves this package's deployed node runs correctly through the Axiom flow-execution path."
+
+nodes:
+  - alias: parse
+    package: christiangeorgelucas/systemd-unit-tools@0.1.0
+    node: ParseUnitFile
+
+edges: []
+
+start: parse

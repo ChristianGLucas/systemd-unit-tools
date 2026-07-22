@@ -28,9 +28,9 @@ description: >-
   identity, a resource-limit/sandboxing hardening-audit extraction,
   Description/Documentation metadata, structural validation, and a
   directive-count summary. Every node accepts either raw unit-file text or a
-  pre-parsed UnitFile from ParseUnitFile (for flow composition). Input text
-  is capped at 1 MB; a malformed unit file always returns a structured
-  error, never a crash.
+  pre-parsed UnitFile from ParseUnitFile, to avoid re-parsing across several
+  calls against the same document. Input text is capped at 1 MB; a
+  malformed unit file always returns a structured error, never a crash.
 tags:
     - systemd
     - unit-file
