@@ -1,0 +1,230 @@
+name: christiangeorgelucas/systemd-unit-tools
+version: 0.1.0
+language: go
+author: Christian George Lucas
+license: MIT
+description: >-
+  Deterministic parsing, structural inspection, and semantic extraction of
+  systemd unit files (.service, .timer, .socket, .mount, .automount, .swap,
+  .path, .target, .slice, .scope), wrapping coreos/go-systemd/v22/unit
+  (Apache-2.0) — CoreOS/Red Hat's unit-file lexer/parser. The unit file is
+  always supplied as text by the caller: no systemctl, no D-Bus, no
+  filesystem, no network, no wall-clock, no randomness. Distinct from
+  config-tools (.env/INI/.properties): systemd unit syntax is INI-LIKE but
+  has systemd-specific semantics this package understands — known sections
+  ([Unit]/[Service]/[Install]/[Timer]/[Socket]/...), directives that
+  legitimately REPEAT (multiple ExecStartPre=, multiple After=, multiple
+  OnCalendar=) preserved as ordered lists rather than collapsed like a plain
+  INI parser would, and typed directive meanings (dependency ordering,
+  execution lifecycle, restart policy, environment, install targets, timer
+  schedules, socket listeners, process identity, resource-limit/sandboxing
+  hardening). Covers the unit-file surface broadly: structural parse into
+  sections/directives, unit-type detection, section listing, scoped
+  directive lookup (returning every value of a repeated key, never just the
+  last), the [Unit] dependency graph, the [Service] execution lifecycle in
+  order with full multiplicity, service Type, Restart policy, Environment/
+  EnvironmentFile (with systemd's quoted-assignment syntax parsed), [Install]
+  directives, [Timer] scheduling, [Socket] Listen* directives, process
+  identity, a resource-limit/sandboxing hardening-audit extraction,
+  Description/Documentation metadata, structural validation, and a
+  directive-count summary. Every node accepts either raw unit-file text or a
+  pre-parsed UnitFile from ParseUnitFile (for flow composition). Input text
+  is capped at 1 MB; a malformed unit file always returns a structured
+  error, never a crash.
+tags:
+    - systemd
+    - unit-file
+    - service
+    - timer
+    - socket
+    - linux
+    - devops
+    - sre
+    - configuration
+    - parsing
+nodes:
+    - name: ParseUnitFile
+      input: ParseUnitFileInput
+      output: ParseUnitFileOutput
+      description: >-
+        Parses raw systemd unit-file text into the canonical UnitFile
+        envelope: every [Section] in first-appearance order, each with its
+        directives in source order and full multiplicity — a repeated
+        directive like "After=a.service" then "After=b.service" produces TWO
+        separate Directive entries, never one overwritten by the other.
+        Handles comments (# and ; as the first non-blank character of a
+        line), backslash line-continuations, and repeated section headers of
+        the same name (merged, matching real systemd behavior). Rejects
+        input over 1 MB and any single line over systemd's own 2048-byte
+        line-length ceiling with a structured error in `error` (never a Go
+        panic) — e.g. a stray "foo" line with no "=" outside any section, or
+        trailing garbage after a "[Section]" header on the same line.
+    - name: DetectUnitType
+      input: DetectUnitTypeInput
+      output: DetectUnitTypeOutput
+      description: >-
+        Determines the unit type (service/socket/mount/automount/swap/path/
+        timer/slice/scope/target) either from a supplied filename's
+        extension (e.g. "nginx.service" -> "service") or, when no filename
+        is given or its extension is unrecognized, from which type-specific
+        section is present in the parsed content (e.g. a [Timer] section ->
+        "timer"). Reports which basis it used in `detection_basis`, and
+        returns unit_type="" with detection_basis="ambiguous" when neither
+        signal resolves it (e.g. a unit with only [Unit]/[Install] sections,
+        which is the ordinary shape of a .target unit but is genuinely
+        ambiguous without the filename).
+    - name: ListSections
+      input: ListSectionsInput
+      output: ListSectionsOutput
+      description: >-
+        Lists every section present in a unit file, in first-appearance
+        order, with each section's directive count — a quick structural
+        overview before drilling into a specific section.
+    - name: GetSectionDirectives
+      input: GetSectionDirectivesInput
+      output: GetSectionDirectivesOutput
+      description: >-
+        Extracts every directive within one named section (e.g. "Service"),
+        in source order and with full multiplicity — the unfiltered view of
+        a section, for when none of this package's typed extraction nodes
+        (GetDependencies, GetExecDirectives, etc.) cover the directive you
+        need. found=false (directives empty) when the section is absent,
+        which is not an error.
+    - name: GetDirectiveValue
+      input: GetDirectiveValueInput
+      output: GetDirectiveValueOutput
+      description: >-
+        Looks up one directive by section + key and returns EVERY value it
+        was declared with, in source order — the general-purpose answer to
+        "what is After= set to", correctly handling directives that
+        legitimately repeat (returns a list, never silently just the last
+        occurrence the way a plain INI/dict lookup would). found=false
+        (values empty) when the key is absent from the section.
+    - name: GetDependencies
+      input: GetDependenciesInput
+      output: GetDependenciesOutput
+      description: >-
+        Extracts the [Unit] section's ordering/dependency directives —
+        Requires, Wants, After, Before, Conflicts, BindsTo, PartOf — as
+        structured lists of unit names. The key node for understanding
+        service ordering and relationships: each directive's value is
+        whitespace-tokenized (a single line may list several units) and
+        every occurrence of a repeated directive contributes its tokens in
+        source order, with duplicates preserved rather than deduped.
+    - name: GetExecDirectives
+      input: GetExecDirectivesInput
+      output: GetExecDirectivesOutput
+      description: >-
+        Extracts the [Service] section's execution-lifecycle directives —
+        ExecStartPre, ExecStart, ExecStartPost, ExecCondition, ExecStop,
+        ExecStopPost, ExecReload — in source order and with full
+        multiplicity (several ExecStartPre= lines is a common, legitimate
+        pattern). Each command is returned verbatim, including any leading
+        "-"/"@"/"+"/"!"/"!!" prefix character systemd itself treats
+        specially; this node reports them as-is without interpreting them.
+    - name: GetServiceType
+      input: GetServiceTypeInput
+      output: GetServiceTypeOutput
+      description: >-
+        Extracts the [Service] section's declared Type= value (simple,
+        forking, oneshot, notify, notify-reload, dbus, exec, idle) verbatim.
+        Reports only what is explicitly declared (explicit=true/false) —
+        deliberately does NOT apply systemd's own implicit default (which
+        depends on whether ExecStart is present), so a caller can tell
+        "declared as simple" apart from "not declared at all".
+    - name: GetRestartPolicy
+      input: GetRestartPolicyInput
+      output: GetRestartPolicyOutput
+      description: >-
+        Extracts the [Service] section's Restart= and RestartSec= values
+        verbatim, or "" when absent (systemd's own implicit defaults are
+        "no" and "100ms" respectively, not applied here — this node reports
+        exactly what is declared).
+    - name: GetEnvironment
+      input: GetEnvironmentInput
+      output: GetEnvironmentOutput
+      description: >-
+        Extracts the [Service] section's Environment= and EnvironmentFile=
+        directives. Environment= supports multiple space-separated
+        KEY=VALUE assignments per line and double-quoted values containing
+        spaces (systemd.syntax quoting, e.g. Environment="FOO=bar baz"
+        QUX=1) — this node tokenizes and unescapes that per occurrence, in
+        source order, across every Environment= line. EnvironmentFile=
+        paths are reported with a leading "-" (meaning "ignore if missing")
+        stripped into a separate `optional` flag.
+    - name: GetInstallDirectives
+      input: GetInstallDirectivesInput
+      output: GetInstallDirectivesOutput
+      description: >-
+        Extracts the [Install] section's directives — WantedBy, RequiredBy,
+        Alias — as whitespace-tokenized lists, the key node for
+        understanding how a unit gets enabled (which targets pull it in via
+        `systemctl enable`).
+    - name: GetTimerSchedule
+      input: GetTimerScheduleInput
+      output: GetTimerScheduleOutput
+      description: >-
+        Extracts a .timer unit's [Timer] scheduling directives — OnCalendar,
+        OnBootSec, OnUnitActiveSec — each occurrence kept as one raw
+        expression (these are single calendar/duration expressions, not
+        whitespace-token lists). OnCalendar= in particular is commonly
+        repeated to declare a union of schedules, so every occurrence is
+        returned, never just the last.
+    - name: GetSocketListeners
+      input: GetSocketListenersInput
+      output: GetSocketListenersOutput
+      description: >-
+        Extracts a .socket unit's [Socket] Listen* directives (ListenStream,
+        ListenDatagram, ListenFIFO, ListenNetlink, ListenSpecial,
+        ListenMessageQueue, ListenSequentialPacket, ListenUSBFunction) as a
+        list of {type, address} pairs, in source order and with full
+        multiplicity — a socket unit commonly declares several listeners.
+    - name: GetProcessIdentity
+      input: GetProcessIdentityInput
+      output: GetProcessIdentityOutput
+      description: >-
+        Extracts the [Service] section's User=, Group=, and
+        WorkingDirectory= values verbatim, or "" when absent.
+    - name: GetHardeningDirectives
+      input: GetHardeningDirectivesInput
+      output: GetHardeningDirectivesOutput
+      description: >-
+        Extracts every [Service] directive matching this package's known
+        allowlist of resource-limit and sandboxing directives — MemoryMax,
+        CPUQuota, TasksMax, LimitNOFILE, ProtectSystem, ProtectHome,
+        PrivateTmp, PrivateNetwork, NoNewPrivileges, ReadOnlyPaths,
+        CapabilityBoundingSet, SystemCallFilter, RestrictAddressFamilies,
+        and similar — the security/hardening-audit node, for answering "how
+        sandboxed is this service" at a glance. Directives outside the
+        allowlist are not included; use GetSectionDirectives for the
+        unfiltered [Service] section.
+    - name: GetMetadata
+      input: GetMetadataInput
+      output: GetMetadataOutput
+      description: >-
+        Extracts the [Unit] section's Description= (verbatim, "" if absent)
+        and Documentation= (whitespace-tokenized across every occurrence, a
+        single line may list multiple URIs).
+    - name: ValidateUnit
+      input: ValidateUnitInput
+      output: ValidateUnitOutput
+      description: >-
+        Validates basic structural correctness: unrecognized section names
+        (outside the known systemd vocabulary and not an "X-" vendor
+        extension) are flagged, a [Service] unit with no ExecStart is
+        flagged as a warning (not an error — ordering-only oneshot services
+        with RemainAfterExit legitimately have none), a [Socket] unit with
+        no Listen* directive is flagged, a [Timer] unit with no schedule
+        directive is flagged, and an unrecognized Type= value is flagged as
+        an error. valid=true iff no issue has "error" severity; warnings
+        never affect it. Static structural validation only — never invokes
+        systemd, so it cannot and does not check whether referenced units
+        actually exist.
+    - name: SummarizeUnit
+      input: SummarizeUnitInput
+      output: SummarizeUnitOutput
+      description: >-
+        Produces a directive-count summary of a unit file — total section
+        count, total directive count, per-section directive counts, and the
+        detected unit type (section-presence basis) — a quick "what's in
+        this file" overview.

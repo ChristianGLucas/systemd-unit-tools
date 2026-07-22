@@ -1,0 +1,429 @@
+// This file defines the data contracts (messages) for your Axiom package.
+// Every node's --input and --output refers to a message defined here.
+//
+// Run `axiom create message <Name>` to scaffold a new message below.
+// Run `axiom generate` to compile these definitions into language bindings in gen/.
+//
+// DOCUMENTATION
+//   Comments written directly above a message or field declaration are extracted
+//   automatically at publish time and shown in the Axiom registry as documentation.
+//   Write your descriptions there — no separate doc files needed.
+//
+//   Leading comment  (no blank line before the declaration) → registry description ✓
+//   Detached comment (blank line before the declaration)    → ignored by registry  ✗
+//
+// This file is yours to edit. Axiom only appends new message blocks — it never
+// overwrites or removes content you have written.
+//
+// CANONICAL ENVELOPE: `UnitFile` — the structural parse of a systemd unit file
+// (.service/.timer/.socket/.mount/.automount/.swap/.path/.target/.slice/.scope),
+// produced by ParseUnitFile and consumed by every other node in this package.
+// Sections are grouped by name in first-appearance order (a repeated `[Service]`
+// header merges into the same section, matching real systemd semantics);
+// directives within a section are preserved EXACTLY as declared, in source
+// order, INCLUDING repeats (e.g. multiple `ExecStartPre=` or `After=` lines) —
+// a plain INI parser that overwrites duplicate keys would silently lose data
+// here, so this envelope never does that.
+//
+// Every node accepts EITHER a raw `text` unit-file string (parsed internally,
+// the common case when calling a node standalone) OR a pre-parsed `unit`
+// UnitFile (the common case when chained after ParseUnitFile in a flow, to
+// avoid re-parsing). `unit` wins when both are non-empty. Parsing/consuming a
+// unit file never touches systemctl, D-Bus, the filesystem, the network, the
+// wall clock, or randomness — the unit file is always exactly the text the
+// caller supplied.
+
+syntax = "proto3";
+
+package christiangeorgelucas.systemd_unit_tools;
+
+option go_package = ".;gen";
+
+// A single `Key=Value` line within a section, exactly as declared. `key` is
+// the directive name (e.g. "ExecStart"); `value` is the raw, trimmed value
+// with backslash line-continuations already joined and comments/blank lines
+// already removed — never further interpreted (quoting, list-splitting,
+// escapes are each node's own job where the directive calls for it).
+message Directive {
+  string key = 1;
+  string value = 2;
+}
+
+// One `[SectionName]` block, with every directive it contains in source
+// order. If the same section name appears more than once in the file, its
+// directives are merged here (in the order encountered) exactly as systemd
+// itself merges repeated section headers.
+message Section {
+  string name = 1;
+  repeated Directive directives = 2;
+}
+
+// The canonical structural parse of an entire unit file: every section, in
+// first-appearance order, each with its directives in source order.
+message UnitFile {
+  repeated Section sections = 1;
+}
+
+// ---- ParseUnitFile ----
+
+// The raw unit-file text is always supplied by the caller — this package
+// never reads a file from disk or asks systemd for one.
+message ParseUnitFileInput {
+  // Full unit-file text, verbatim (any line endings; comments and
+  // line-continuations included as part of the text itself).
+  string text = 1;
+  // Optional filename or unit name (e.g. "nginx.service", "backup.timer").
+  // Not required to parse; DetectUnitType uses its extension as a hint when
+  // supplied.
+  string filename = 2;
+}
+
+message ParseUnitFileOutput {
+  UnitFile unit = 1;
+  // Set (non-empty) when the text could not be parsed as a unit file — e.g. a
+  // stray line outside any section, an unterminated section header, or a
+  // single line over systemd's 2048-byte line-length ceiling. `unit` is
+  // empty in that case. Never a crash; always this structured error.
+  string error = 2;
+}
+
+// ---- DetectUnitType ----
+
+message DetectUnitTypeInput {
+  string text = 1;
+  UnitFile unit = 2;
+  // Optional filename/unit name; its extension (".service", ".timer", ...)
+  // is used as the primary signal when present and recognized.
+  string filename = 3;
+}
+
+message DetectUnitTypeOutput {
+  // One of: "service", "socket", "mount", "automount", "swap", "path",
+  // "timer", "slice", "scope", "target", or "" when it cannot be determined.
+  string unit_type = 1;
+  // How unit_type was decided: "filename_extension" (a recognized extension
+  // was supplied), "section_presence" (inferred from which type-specific
+  // section is present), or "ambiguous" (no type-specific section and no/
+  // unrecognized filename — unit_type is "" in this case).
+  string detection_basis = 2;
+  string error = 3;
+}
+
+// ---- ListSections ----
+
+message ListSectionsInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// A section name plus how many directives it holds — no directive values.
+message SectionSummary {
+  string name = 1;
+  int32 directive_count = 2;
+}
+
+message ListSectionsOutput {
+  repeated SectionSummary sections = 1;
+  string error = 2;
+}
+
+// ---- GetSectionDirectives ----
+
+message GetSectionDirectivesInput {
+  string text = 1;
+  UnitFile unit = 2;
+  // Section name to extract, e.g. "Service" (without brackets, case-sensitive
+  // — systemd section names are case-sensitive).
+  string section_name = 3;
+}
+
+message GetSectionDirectivesOutput {
+  repeated Directive directives = 1;
+  // False when section_name is not present in the unit file (directives is
+  // then empty — this is a normal, non-error outcome).
+  bool found = 2;
+  string error = 3;
+}
+
+// ---- GetDirectiveValue ----
+
+message GetDirectiveValueInput {
+  string text = 1;
+  UnitFile unit = 2;
+  string section_name = 3;
+  // Directive name to look up, e.g. "After" (case-sensitive).
+  string key = 4;
+}
+
+message GetDirectiveValueOutput {
+  // Every value of this directive within this section, in source order.
+  // Directives that legitimately repeat (ExecStartPre, After, ...) return
+  // every occurrence here — never just the last one.
+  repeated string values = 1;
+  bool found = 2;
+  string error = 3;
+}
+
+// ---- GetDependencies ----
+
+message GetDependenciesInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// The [Unit] section's ordering/dependency directives, structured. Each
+// directive's value is whitespace-tokenized into individual unit names (a
+// single line may list several, e.g. "After=a.service b.service"), and
+// tokens from every occurrence of the directive are concatenated in source
+// order — duplicates are NOT removed, since systemd itself does not dedupe
+// and a caller may care that a name was declared twice.
+message GetDependenciesOutput {
+  repeated string requires = 1;
+  repeated string wants = 2;
+  repeated string after = 3;
+  repeated string before = 4;
+  repeated string conflicts = 5;
+  repeated string binds_to = 6;
+  repeated string part_of = 7;
+  string error = 8;
+}
+
+// ---- GetExecDirectives ----
+
+message GetExecDirectivesInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// One Exec* directive occurrence from [Service], preserving its raw command
+// line (including any leading "-"/"@"/"+"/"!"/"!!" prefix characters systemd
+// itself gives special meaning to — this package reports them verbatim and
+// does not interpret them).
+message ExecEntry {
+  // "ExecStartPre" | "ExecStart" | "ExecStartPost" | "ExecCondition" |
+  // "ExecStop" | "ExecStopPost" | "ExecReload".
+  string directive = 1;
+  string command = 2;
+}
+
+// Every Exec* directive in [Service], in source order and with full
+// multiplicity (ExecStartPre/ExecStartPost/ExecStop/ExecStopPost/
+// ExecCondition may each legitimately appear more than once; this node never
+// collapses them).
+message GetExecDirectivesOutput {
+  repeated ExecEntry entries = 1;
+  string error = 2;
+}
+
+// ---- GetServiceType ----
+
+message GetServiceTypeInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message GetServiceTypeOutput {
+  // The declared Type= value verbatim (e.g. "simple", "forking", "oneshot",
+  // "notify", "dbus"), or "" if [Service] has no Type= directive. This node
+  // reports exactly what is declared — it does NOT apply systemd's implicit
+  // default (which is "simple", or "oneshot" when no ExecStart is present);
+  // check `explicit` to distinguish "declared" from "absent".
+  string type = 1;
+  bool explicit = 2;
+  string error = 3;
+}
+
+// ---- GetRestartPolicy ----
+
+message GetRestartPolicyInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message GetRestartPolicyOutput {
+  // Declared Restart= value verbatim (e.g. "no", "on-failure", "always"), or
+  // "" if absent (systemd's implicit default is "no").
+  string restart = 1;
+  // Declared RestartSec= value verbatim (e.g. "5", "5s", "100ms"), or "" if
+  // absent (systemd's implicit default is 100ms). Not unit-converted.
+  string restart_sec = 2;
+  string error = 3;
+}
+
+// ---- GetEnvironment ----
+
+message GetEnvironmentInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message EnvVar {
+  string key = 1;
+  string value = 2;
+}
+
+message EnvironmentFileEntry {
+  string path = 1;
+  // True when the path had a leading "-" (systemd: ignore this file if it
+  // does not exist), reported here with the "-" stripped from `path`.
+  bool optional = 2;
+}
+
+// Every Environment= and EnvironmentFile= directive in [Service], flattened.
+// Environment= supports multiple space-separated KEY=VALUE pairs per line
+// and double-quoted values containing spaces (systemd.syntax quoting); this
+// node tokenizes and unescapes that per occurrence, in source order.
+message GetEnvironmentOutput {
+  repeated EnvVar environment = 1;
+  repeated EnvironmentFileEntry environment_files = 2;
+  string error = 3;
+}
+
+// ---- GetInstallDirectives ----
+
+message GetInstallDirectivesInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// The [Install] section's directives, structured — how the unit gets
+// enabled. WantedBy/RequiredBy values are whitespace-tokenized into
+// individual target names (as with GetDependencies); Alias values likewise.
+message GetInstallDirectivesOutput {
+  repeated string wanted_by = 1;
+  repeated string required_by = 2;
+  repeated string alias = 3;
+  string error = 4;
+}
+
+// ---- GetTimerSchedule ----
+
+message GetTimerScheduleInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// The [Timer] section's scheduling directives, each kept as one raw
+// expression per occurrence (these are not whitespace-token lists — a single
+// OnCalendar= value is one calendar expression, and OnCalendar= is commonly
+// repeated to declare a union of schedules, so every occurrence is kept).
+message GetTimerScheduleOutput {
+  repeated string on_calendar = 1;
+  repeated string on_boot_sec = 2;
+  repeated string on_unit_active_sec = 3;
+  string error = 4;
+}
+
+// ---- GetSocketListeners ----
+
+message GetSocketListenersInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message ListenEntry {
+  // The Listen* directive with the "Listen" prefix stripped, e.g. "Stream",
+  // "Datagram", "FIFO", "Netlink", "Special", "MessageQueue",
+  // "SequentialPacket", "USBFunction".
+  string type = 1;
+  string address = 2;
+}
+
+// Every Listen* directive in [Socket], in source order and with full
+// multiplicity (a socket unit commonly declares several).
+message GetSocketListenersOutput {
+  repeated ListenEntry listeners = 1;
+  string error = 2;
+}
+
+// ---- GetProcessIdentity ----
+
+message GetProcessIdentityInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message GetProcessIdentityOutput {
+  // Declared User=, Group=, WorkingDirectory= from [Service], verbatim, or
+  // "" if absent.
+  string user = 1;
+  string group = 2;
+  string working_directory = 3;
+  string error = 4;
+}
+
+// ---- GetHardeningDirectives ----
+
+message GetHardeningDirectivesInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+// Every directive in [Service] that matches this package's known allowlist
+// of resource-limit and sandboxing directives (MemoryMax, CPUQuota,
+// ProtectSystem, PrivateTmp, NoNewPrivileges, and similar) — the
+// security/hardening-audit surface. Directives not on the allowlist are not
+// reported here (see GetSectionDirectives for the unfiltered section).
+message GetHardeningDirectivesOutput {
+  repeated Directive directives = 1;
+  string error = 2;
+}
+
+// ---- GetMetadata ----
+
+message GetMetadataInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message GetMetadataOutput {
+  // Declared Description= from [Unit], verbatim, or "" if absent.
+  string description = 1;
+  // Every Documentation= value from [Unit], whitespace-tokenized (a single
+  // line may list multiple URIs) across every occurrence, in source order.
+  repeated string documentation = 2;
+  string error = 3;
+}
+
+// ---- ValidateUnit ----
+
+message ValidateUnitInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message ValidationIssue {
+  // "error" (valid is false when any issue is "error") | "warning".
+  string severity = 1;
+  // The section the issue concerns, or "" for a file-level issue.
+  string section = 2;
+  string message = 3;
+}
+
+message ValidateUnitOutput {
+  // True iff no "error"-severity issue was found. Warnings never affect
+  // this — e.g. a service with no ExecStart is only ever a warning, since
+  // ordering-only oneshot services with RemainAfterExit legitimately have
+  // none.
+  bool valid = 1;
+  repeated ValidationIssue issues = 2;
+  // The detected unit type, using the same logic as DetectUnitType
+  // (section-presence basis only; ValidateUnit does not take a filename).
+  string unit_type = 3;
+  string error = 4;
+}
+
+// ---- SummarizeUnit ----
+
+message SummarizeUnitInput {
+  string text = 1;
+  UnitFile unit = 2;
+}
+
+message SummarizeUnitOutput {
+  int32 section_count = 1;
+  int32 directive_count = 2;
+  repeated SectionSummary sections = 3;
+  string unit_type = 4;
+  string error = 5;
+}
