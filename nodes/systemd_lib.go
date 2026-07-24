@@ -16,12 +16,6 @@ import (
 	gen "christiangeorgelucas/systemd-unit-tools/gen"
 )
 
-// maxInputBytes bounds the raw unit-file text accepted by parseUnitText,
-// checked before any parsing work happens. Real-world unit files are a few
-// KB at most; 1 MB is generous headroom while still refusing a pathological
-// payload outright.
-const maxInputBytes = 1 << 20 // 1 MiB
-
 // parseUnitText parses raw unit-file text into the canonical UnitFile
 // envelope, delegating the actual lexing/grammar (comments, backslash line
 // continuations, the systemd 2048-byte line-length ceiling, "garbage after
@@ -30,9 +24,6 @@ const maxInputBytes = 1 << 20 // 1 MiB
 // section headers of the same name are merged, in first-appearance order;
 // directives are never deduplicated or overwritten.
 func parseUnitText(text string) (*gen.UnitFile, error) {
-	if len(text) > maxInputBytes {
-		return nil, fmt.Errorf("unit file text exceeds the %d byte limit", maxInputBytes)
-	}
 	secs, err := sdunit.DeserializeSections(strings.NewReader(text))
 	if err != nil {
 		return nil, err

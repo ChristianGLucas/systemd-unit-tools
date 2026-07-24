@@ -2,6 +2,7 @@ package nodes_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	gen "christiangeorgelucas/systemd-unit-tools/gen"
@@ -115,19 +116,21 @@ func TestParseUnitFile_EmptyText(t *testing.T) {
 	}
 }
 
-// TestParseUnitFile_OversizedInput proves the 1 MB text cap fires on raw
-// input before any parsing work happens.
-func TestParseUnitFile_OversizedInput(t *testing.T) {
+// TestParseUnitFile_LargeInput proves that without a raw-size cap — the platform owns payload size, so a large
+// but well-formed unit file must parse cleanly, not be rejected or crash.
+func TestParseUnitFile_LargeInput(t *testing.T) {
 	ctx, ax := context.Background(), newTestContext(t)
-	huge := make([]byte, (1<<20)+1)
-	for i := range huge {
-		huge[i] = 'a'
+	var b strings.Builder
+	b.WriteString("[Service]\n")
+	// ~2 MiB of valid directives, well over the old 1 MiB cap.
+	for b.Len() < (2 << 20) {
+		b.WriteString("Environment=KEY=value\n")
 	}
-	got, err := nodes.ParseUnitFile(ctx, ax, &gen.ParseUnitFileInput{Text: string(huge)})
+	got, err := nodes.ParseUnitFile(ctx, ax, &gen.ParseUnitFileInput{Text: b.String()})
 	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
+		t.Fatalf("unexpected Go error on large input: %v", err)
 	}
-	if got.Error == "" {
-		t.Fatalf("expected the size cap to reject oversized input")
+	if got.Error != "" {
+		t.Fatalf("large valid unit file should parse, got structured error: %s", got.Error)
 	}
 }
