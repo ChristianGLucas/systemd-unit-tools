@@ -1,5 +1,6 @@
 name: christiangeorgelucas/systemd-unit-tools
-version: 0.1.2language: go
+version: 0.1.2
+language: go
 author: Christian George Lucas
 license: MIT
 description: >-
